@@ -1,0 +1,67 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Virtual environments
+venv/
+.venv/
+env/
+ENV/
+
+# Conda
+*.conda
+
+# Environment variables
+.env
+.env.*
+
+# IDE
+.vscode/
+.idea/
+
+# Python tooling
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Logs
+*.log
+
+# Temporary files
+tmp/
+temp/
+
+# Uploaded documents
+uploads/
+uploaded_files/
+
+# Personal/test documents
+*.pdf
+*.docx
+*.xlsx
+*.xls
+*.jpg
+*.jpeg
+*.png
+
+# OCR/debug output
+ocr_output/
+debug_output/
+
+# ML models
+models/
+checkpoints/
+
+*.bin
+*.safetensors
+*.pt
+*.pth
+
+# Hugging Face cache
+.cache/
+huggingface/
+
+# Dataset files containing private data
+data/raw/
+data/private/

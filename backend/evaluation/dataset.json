@@ -1,0 +1,38 @@
+[
+    {
+      "id": 1,
+      "text": "Rahul Sharma can be contacted at rahul.sharma@gmail.com or 9876543210. PAN: ABCDE1234F.",
+      "entities": [
+        {
+          "type": "Name",
+          "value": "Rahul Sharma"
+        },
+        {
+          "type": "Email",
+          "value": "rahul.sharma@gmail.com"
+        },
+        {
+          "type": "Phone",
+          "value": "9876543210"
+        },
+        {
+          "type": "PAN",
+          "value": "ABCDE1234F"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "text": "Aadhaar Number: 2345 6789 0123. Name: Priya Das.",
+      "entities": [
+        {
+          "type": "Aadhaar",
+          "value": "234567890123"
+        },
+        {
+          "type": "Name",
+          "value": "Priya Das"
+        }
+      ]
+    }
+  ]

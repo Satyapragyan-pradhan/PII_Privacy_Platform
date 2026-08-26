@@ -1,0 +1,4 @@
+FROM llama3:latest
+
+PARAMETER num_ctx 2048
+PARAMETER temperature 0
