@@ -146,10 +146,10 @@ def main():
 
     learning_rate=2e-5,
 
-    per_device_train_batch_size=4,
-    per_device_eval_batch_size=4,
+    per_device_train_batch_size=2,
+    per_device_eval_batch_size=2,
 
-    gradient_accumulation_steps=4,
+    gradient_accumulation_steps=8,
 
     num_train_epochs=3,
 
@@ -162,13 +162,11 @@ def main():
     metric_for_best_model="f1",
     greater_is_better=True,
 
-    # T4 supports BF16
     bf16=True,
     fp16=False,
 
     report_to="none",
 )
-
     trainer = Trainer(
         model=model,
         args=training_args,
