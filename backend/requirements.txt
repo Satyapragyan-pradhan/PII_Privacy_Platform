@@ -21,3 +21,9 @@ langgraph
 
 pytest
 httpx
+
+transformers
+datasets
+seqeval
+accelerate
+sentencepiece
