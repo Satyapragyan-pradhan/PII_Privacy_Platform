@@ -41,6 +41,9 @@ def compute_metrics(eval_prediction):
     true_predictions = []
     true_labels = []
 
+    total_true_entities = 0
+    total_pred_entities = 0
+
     for prediction, label in zip(
         predictions,
         labels
@@ -57,35 +60,51 @@ def compute_metrics(eval_prediction):
             if l == -100:
                 continue
 
-            current_predictions.append(
-                ID2LABEL[p]
-            )
+            pred_label = ID2LABEL[p]
+            true_label = ID2LABEL[l]
 
-            current_labels.append(
-                ID2LABEL[l]
-            )
+            current_predictions.append(pred_label)
+            current_labels.append(true_label)
 
-        true_predictions.append(
-            current_predictions
-        )
+            if true_label != "O":
+                total_true_entities += 1
 
-        true_labels.append(
-            current_labels
-        )
+            if pred_label != "O":
+                total_pred_entities += 1
+
+        true_predictions.append(current_predictions)
+        true_labels.append(current_labels)
+
+    precision = precision_score(
+        true_labels,
+        true_predictions,
+        zero_division=0
+    )
+
+    recall = recall_score(
+        true_labels,
+        true_predictions,
+        zero_division=0
+    )
+
+    f1 = f1_score(
+        true_labels,
+        true_predictions,
+        zero_division=0
+    )
+
+    print("\n========== ENTITY DIAGNOSTICS ==========")
+    print("True entity tokens :", total_true_entities)
+    print("Predicted entity tokens:", total_pred_entities)
+    print("Precision:", precision)
+    print("Recall   :", recall)
+    print("F1       :", f1)
+    print("========================================\n")
 
     return {
-        "precision": precision_score(
-            true_labels,
-            true_predictions
-        ),
-        "recall": recall_score(
-            true_labels,
-            true_predictions
-        ),
-        "f1": f1_score(
-            true_labels,
-            true_predictions
-        ),
+        "precision": precision,
+        "recall": recall,
+        "f1": f1,
     }
 
 
