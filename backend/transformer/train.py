@@ -138,15 +138,14 @@ def main():
 
     logging_steps=50,
 
-    save_total_limit=2,
-
     load_best_model_at_end=True,
 
     metric_for_best_model="f1",
     greater_is_better=True,
 
+    # T4 supports BF16
+    bf16=True,
     fp16=False,
-    bf16=torch.cuda.is_available(),
 
     report_to="none",
 )
@@ -166,9 +165,11 @@ def main():
     )
 
     print("Starting training...")
+    print("Device:", next(model.parameters()).device)
+    print("BF16:", training_args.bf16)
+    print("FP16:", training_args.fp16)
 
     trainer.train()
-
     print("Training complete.")
 
     trainer.save_model(OUTPUT_DIR)
