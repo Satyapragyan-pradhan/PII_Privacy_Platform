@@ -25,7 +25,6 @@ from transformer.labels import (
 
 
 MODEL_NAME = "microsoft/deberta-v3-base"
-
 OUTPUT_DIR = "transformer/model/deberta-pii"
 
 
@@ -33,10 +32,7 @@ def compute_metrics(eval_prediction):
 
     predictions, labels = eval_prediction
 
-    predictions = np.argmax(
-        predictions,
-        axis=2
-    )
+    predictions = np.argmax(predictions, axis=2)
 
     true_predictions = []
     true_labels = []
@@ -44,18 +40,12 @@ def compute_metrics(eval_prediction):
     total_true_entities = 0
     total_pred_entities = 0
 
-    for prediction, label in zip(
-        predictions,
-        labels
-    ):
+    for prediction, label in zip(predictions, labels):
 
         current_predictions = []
         current_labels = []
 
-        for p, l in zip(
-            prediction,
-            label
-        ):
+        for p, l in zip(prediction, label):
 
             if l == -100:
                 continue
@@ -94,11 +84,11 @@ def compute_metrics(eval_prediction):
     )
 
     print("\n========== ENTITY DIAGNOSTICS ==========")
-    print("True entity tokens :", total_true_entities)
+    print("True entity tokens     :", total_true_entities)
     print("Predicted entity tokens:", total_pred_entities)
-    print("Precision:", precision)
-    print("Recall   :", recall)
-    print("F1       :", f1)
+    print("Precision              :", precision)
+    print("Recall                 :", recall)
+    print("F1                     :", f1)
     print("========================================\n")
 
     return {
@@ -110,13 +100,17 @@ def compute_metrics(eval_prediction):
 
 def main():
 
-    print("Loading dataset...")
+    print("=" * 60)
+    print("PII DeBERTa-v3 Token Classification Training")
+    print("=" * 60)
+
+    print("\nLoading dataset...")
 
     dataset = load_pii_dataset()
 
     print(dataset)
 
-    print("Tokenizing dataset...")
+    print("\nTokenizing dataset...")
 
     tokenized = dataset.map(
         tokenize_example
@@ -124,14 +118,18 @@ def main():
 
     print(tokenized)
 
-    print("Loading DeBERTa-v3-base...")
+    print("\nLoading DeBERTa-v3-base...")
 
-    model=AutoModelForTokenClassification.from_pretrained(
-     MODEL_NAME,
-     num_labels=len(LABELS),
-     id2label=ID2LABEL,
-     label2id=LABEL2ID,
-     use_safetensors=True,
+    # IMPORTANT:
+    # Force FP32 model weights.
+    # This avoids the FP16 + AdamW NaN issue observed locally.
+    model = AutoModelForTokenClassification.from_pretrained(
+        MODEL_NAME,
+        num_labels=len(LABELS),
+        id2label=ID2LABEL,
+        label2id=LABEL2ID,
+        use_safetensors=True,
+        dtype=torch.float32,
     )
 
     data_collator = DataCollatorForTokenClassification(
@@ -139,34 +137,50 @@ def main():
     )
 
     training_args = TrainingArguments(
-    output_dir=OUTPUT_DIR,
 
-    eval_strategy="epoch",
-    save_strategy="epoch",
+        output_dir=OUTPUT_DIR,
 
-    learning_rate=2e-5,
+        # Evaluate/save periodically rather than every epoch
+        eval_strategy="steps",
+        eval_steps=500,
 
-    per_device_train_batch_size=2,
-    per_device_eval_batch_size=2,
+        save_strategy="steps",
+        save_steps=500,
 
-    gradient_accumulation_steps=8,
+        # Optimization
+        learning_rate=1e-5,
+        weight_decay=0.01,
+        max_grad_norm=1.0,
 
-    num_train_epochs=3,
+        per_device_train_batch_size=2,
+        per_device_eval_batch_size=2,
+        gradient_accumulation_steps=8,
 
-    weight_decay=0.01,
+        # Actual training
+        num_train_epochs=3,
 
-    logging_steps=50,
+        # Logging
+        logging_steps=100,
 
-    load_best_model_at_end=True,
+        # Best checkpoint
+        load_best_model_at_end=True,
+        metric_for_best_model="f1",
+        greater_is_better=True,
 
-    metric_for_best_model="f1",
-    greater_is_better=True,
+        # Keep FP16 disabled because it caused NaN locally.
+        fp16=False,
+        bf16=False,
 
-    bf16=True,
-    fp16=False,
+        # No external logging
+        report_to="none",
 
-    report_to="none",
-)
+        # Better memory behavior
+        dataloader_pin_memory=True,
+
+        # Reproducibility
+        seed=42,
+    )
+
     trainer = Trainer(
         model=model,
         args=training_args,
@@ -181,20 +195,49 @@ def main():
         compute_metrics=compute_metrics,
     )
 
-    print("Starting training...")
+    print("\n" + "=" * 60)
+    print("TRAINING CONFIGURATION")
+    print("=" * 60)
+
     print("Device:", next(model.parameters()).device)
-    print("BF16:", training_args.bf16)
+    print("Model dtype:", next(model.parameters()).dtype)
+    print("Train batch size:", training_args.per_device_train_batch_size)
+    print("Gradient accumulation:", training_args.gradient_accumulation_steps)
+    print(
+        "Effective batch size:",
+        training_args.per_device_train_batch_size
+        * training_args.gradient_accumulation_steps
+    )
+    print("Learning rate:", training_args.learning_rate)
+    print("Epochs:", training_args.num_train_epochs)
     print("FP16:", training_args.fp16)
+    print("BF16:", training_args.bf16)
+
+    if torch.cuda.is_available():
+
+        print("GPU:", torch.cuda.get_device_name(0))
+
+        total_memory = torch.cuda.get_device_properties(0).total_memory
+        print(
+            "GPU memory:",
+            round(total_memory / 1024**3, 2),
+            "GB"
+        )
+
+    print("=" * 60)
+
+    print("\nStarting training...\n")
 
     trainer.train()
-    print("Training complete.")
+
+    print("\nTraining complete.")
+
+    print("\nSaving final model...")
 
     trainer.save_model(OUTPUT_DIR)
     tokenizer.save_pretrained(OUTPUT_DIR)
 
-    print(
-        f"Model saved to: {OUTPUT_DIR}"
-    )
+    print(f"\nModel saved to: {OUTPUT_DIR}")
 
 
 if __name__ == "__main__":
