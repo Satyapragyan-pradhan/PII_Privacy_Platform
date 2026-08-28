@@ -64,4 +64,4 @@ huggingface/
 
 # Dataset files containing private data
 data/raw/
-data/private/
+data/private/transformer/model/ 
