@@ -1,123 +1,74 @@
-import json
-import re
+from typing import List, Dict, Any
 
-import requests
-
-from core.config import settings
+from transformer.inference import extract_pii
 
 
-SYSTEM_PROMPT = """
-You are a PII extraction system.
+# ---------------------------------------------------------
+# DeBERTa contextual / NER extraction
+# ---------------------------------------------------------
 
-Extract only the following entities:
+def contextual_extract(text: str) -> List[Dict[str, Any]]:
+    """
+    Extract PII entities using the fine-tuned DeBERTa model.
 
-- Name
-- Address
-- Date of Birth
+    DeBERTa is used as the ML-based contextual extractor.
+    Regex remains responsible for deterministic entities.
 
-Return ONLY valid JSON in this format:
+    Returns entities in the common pipeline format:
 
-{
-  "entities": [
     {
-      "type": "Name",
-      "value": "..."
+        "value": "...",
+        "type": "...",
+        "start": 0,
+        "end": 10,
+        "confidence": 0.98,
+        "source": "deberta",
+        "validated": False
     }
-  ]
-}
-
-Do not invent information.
-Only extract information explicitly present in the text.
-"""
-
-
-def extract_json(text: str):
-    """
-    Attempts to extract JSON from an LLM response.
     """
 
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        pass
-
-    match = re.search(
-        r"\{.*\}",
-        text,
-        re.DOTALL
-    )
-
-    if not match:
-        return {"entities": []}
+    if not text or not text.strip():
+        return []
 
     try:
-        return json.loads(
-            match.group(0)
-        )
-    except json.JSONDecodeError:
-        return {"entities": []}
-
-
-def contextual_extract(text: str):
-    prompt = f"""
-{SYSTEM_PROMPT}
-
-DOCUMENT TEXT:
-
-{text}
-"""
-
-    try:
-        response = requests.post(
-            f"{settings.OLLAMA_BASE_URL}/api/generate",
-            json={
-                "model": settings.OLLAMA_MODEL,
-                "prompt": prompt,
-                "stream": False,
-                "options": {
-                    "temperature": 0
-                }
-            },
-            timeout=120
-        )
-
-        response.raise_for_status()
-
-        result = response.json()
-
-        parsed = extract_json(
-            result.get("response", "")
-        )
+        predictions = extract_pii(text)
 
         entities = []
 
-        for entity in parsed.get(
-            "entities",
-            []
-        ):
+        for prediction in predictions:
 
-            entity_type = entity.get("type")
-            value = entity.get("value")
+            entity_type = prediction.get(
+                "entity",
+                ""
+            )
 
-            if entity_type not in {
-                "Name",
-                "Address",
-                "Date of Birth"
-            }:
-                continue
+            value = prediction.get(
+                "text",
+                ""
+            )
 
-            if not value:
+            if not entity_type or not value:
                 continue
 
             entities.append({
                 "value": value.strip(),
                 "type": entity_type,
-                "confidence": 0.82,
-                "source": "llm/context",
+                "start": prediction.get("start"),
+                "end": prediction.get("end"),
+                "confidence": prediction.get(
+                    "confidence",
+                    0.0
+                ),
+                "source": "deberta",
                 "validated": False
             })
 
         return entities
 
-    except Exception:
+    except Exception as exc:
+
+        print(
+            f"DeBERTa contextual extraction failed: {exc}"
+        )
+
         return []
