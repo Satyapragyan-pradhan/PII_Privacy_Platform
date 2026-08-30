@@ -65,3 +65,13 @@ huggingface/
 # Dataset files containing private data
 data/raw/
 data/private/transformer/model/ 
+
+# Old DeBERTa checkpoints
+transformer/model/deberta-pii-old/
+
+# Training/debug artifacts
+transformer/debug_*.py
+str
+
+# Training checkpoints
+transformer/model/*/checkpoint-*/
