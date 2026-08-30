@@ -1,42 +1,29 @@
-import spacy
-
-
-try:
-    nlp = spacy.load("en_core_web_sm")
-except Exception:
-    nlp = None
+from transformer.inference import extract_pii
 
 
 def extract_nlp_entities(text: str):
-    if nlp is None:
+
+    try:
+        entities = extract_pii(text)
+
+        for entity in entities:
+            entity["type"] = str(
+                entity.get("type", "")
+            ).upper()
+
+            entity["source"] = "deberta"
+
+            entity.setdefault(
+                "validated",
+                False
+            )
+
+        return entities
+
+    except Exception as exc:
+
+        print(
+            f"DeBERTa extraction failed: {exc}"
+        )
+
         return []
-
-    doc = nlp(text)
-
-    entities = []
-
-    for ent in doc.ents:
-
-        if ent.label_ == "PERSON":
-            entities.append({
-                "value": ent.text.strip(),
-                "type": "Name",
-                "confidence": 0.70,
-                "source": "spacy_ner",
-                "validated": False
-            })
-
-        elif ent.label_ in {
-            "GPE",
-            "LOC",
-            "FAC"
-        }:
-            entities.append({
-                "value": ent.text.strip(),
-                "type": "Address",
-                "confidence": 0.55,
-                "source": "spacy_ner",
-                "validated": False
-            })
-
-    return entities

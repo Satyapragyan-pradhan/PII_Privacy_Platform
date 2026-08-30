@@ -12,7 +12,11 @@ from transformers import (
 # Model configuration
 # ---------------------------------------------------------
 
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+BASE_DIR = os.path.dirname(
+    os.path.dirname(
+        os.path.abspath(__file__)
+    )
+)
 
 MODEL_PATH = os.path.join(
     BASE_DIR,
@@ -23,75 +27,79 @@ MODEL_PATH = os.path.join(
 
 
 # ---------------------------------------------------------
-# DeBERTa PII NER Model
+# DeBERTa PII NER
 # ---------------------------------------------------------
 
 class DeBERTaPIIExtractor:
-    """
-    Local inference wrapper for the fine-tuned DeBERTa
-    token-classification model.
-    """
 
-    def __init__(self, model_path: str = MODEL_PATH):
+    def __init__(
+        self,
+        model_path: str = MODEL_PATH
+    ):
+
         self.model_path = model_path
 
-        if not os.path.exists(self.model_path):
+        if not os.path.exists(
+            self.model_path
+        ):
             raise FileNotFoundError(
-                f"DeBERTa model not found at: {self.model_path}"
+                f"DeBERTa model not found at: "
+                f"{self.model_path}"
             )
 
-        print(f"Loading DeBERTa model from: {self.model_path}")
-
-        self.tokenizer = AutoTokenizer.from_pretrained(
-            self.model_path,
-            local_files_only=True,
+        print(
+            f"Loading DeBERTa model from: "
+            f"{self.model_path}"
         )
 
-        self.model = AutoModelForTokenClassification.from_pretrained(
-            self.model_path,
-            local_files_only=True,
+        self.tokenizer = (
+            AutoTokenizer.from_pretrained(
+                self.model_path,
+                local_files_only=True,
+            )
         )
 
-        self.model.eval()
+        self.model = (
+            AutoModelForTokenClassification
+            .from_pretrained(
+                self.model_path,
+                local_files_only=True,
+            )
+        )
 
-        # Use GPU if available, otherwise CPU
         self.device = torch.device(
-            "cuda" if torch.cuda.is_available() else "cpu"
+            "cuda"
+            if torch.cuda.is_available()
+            else "cpu"
         )
 
         self.model.to(self.device)
+        self.model.eval()
 
-        print(f"DeBERTa loaded successfully on {self.device}")
-        print(f"Number of labels: {self.model.config.num_labels}")
+        print(
+            f"DeBERTa loaded successfully "
+            f"on {self.device}"
+        )
+
+        print(
+            f"Number of labels: "
+            f"{self.model.config.num_labels}"
+        )
+
 
     # -----------------------------------------------------
-    # Extract entities from text
+    # Extract entities
     # -----------------------------------------------------
 
-    def extract(self, text: str) -> List[Dict[str, Any]]:
-        """
-        Run NER inference on a piece of text.
-
-        Returns:
-            [
-                {
-                    "entity": "NAME",
-                    "text": "Rahul Sharma",
-                    "start": 11,
-                    "end": 23,
-                    "confidence": 0.98
-                }
-            ]
-        """
+    def extract(
+        self,
+        text: str
+    ) -> List[Dict[str, Any]]:
 
         if not text or not text.strip():
             return []
 
-        # -------------------------------------------------
-        # Tokenize
-        # -------------------------------------------------
-
-        inputs = self.tokenizer(
+        encoded = self.tokenizer(
             text,
             return_tensors="pt",
             truncation=True,
@@ -99,347 +107,209 @@ class DeBERTaPIIExtractor:
             return_offsets_mapping=True,
         )
 
-        # Character offsets corresponding to each token
-        offset_mapping = inputs.pop(
-            "offset_mapping"
-        )[0].tolist()
+        offset_mapping = (
+            encoded.pop("offset_mapping")[0]
+            .tolist()
+        )
 
-        # Move tensors to GPU / CPU
         inputs = {
             key: value.to(self.device)
-            for key, value in inputs.items()
+            for key, value in encoded.items()
         }
-
-        # -------------------------------------------------
-        # Model inference
-        # -------------------------------------------------
 
         with torch.no_grad():
             outputs = self.model(**inputs)
 
         probabilities = torch.softmax(
             outputs.logits,
-            dim=-1,
+            dim=-1
         )
 
         predictions = torch.argmax(
             probabilities,
-            dim=-1,
+            dim=-1
         )[0]
 
         confidences = torch.max(
             probabilities,
-            dim=-1,
+            dim=-1
         ).values[0]
 
-        # -------------------------------------------------
-        # Convert BIO predictions into entities
-        # -------------------------------------------------
-
-        raw_entities = []
-
+        entities = []
         current_entity = None
-        current_confidences = []
 
-        for i, (prediction, confidence) in enumerate(
+        # -------------------------------------------------
+        # BIO decoding
+        # -------------------------------------------------
+
+        for i, (
+            prediction,
+            confidence
+        ) in enumerate(
             zip(
                 predictions.tolist(),
-                confidences.tolist(),
+                confidences.tolist()
             )
         ):
 
-            token_start, token_end = offset_mapping[i]
+            start, end = offset_mapping[i]
 
-            # Ignore special tokens
-            if token_start == token_end:
+            # Special tokens
+            if start == end:
                 continue
 
             label = self.model.config.id2label[
                 prediction
             ]
 
-            # ---------------------------------------------
-            # Outside any entity
-            # ---------------------------------------------
-
             if label == "O":
 
                 if current_entity:
-                    raw_entities.append(
-                        {
-                            **current_entity,
-                            "confidences": current_confidences,
-                        }
+                    entities.append(
+                        current_entity
                     )
 
-                    current_entity = None
-                    current_confidences = []
-
+                current_entity = None
                 continue
-
-            # ---------------------------------------------
-            # Parse BIO label
-            # ---------------------------------------------
 
             if "-" not in label:
                 continue
 
             prefix, entity_type = label.split(
                 "-",
-                1,
+                1
             )
 
-            # ---------------------------------------------
-            # Beginning of new entity
-            # ---------------------------------------------
+            # -------------------------------------------------
+            # Beginning of entity
+            # -------------------------------------------------
 
             if prefix == "B":
 
                 if current_entity:
-                    raw_entities.append(
-                        {
-                            **current_entity,
-                            "confidences": current_confidences,
-                        }
+                    entities.append(
+                        current_entity
                     )
 
                 current_entity = {
-                    "entity": entity_type,
-                    "start": token_start,
-                    "end": token_end,
+                    "type": entity_type,
+                    "value": text[start:end],
+                    "start": start,
+                    "end": end,
+                    "confidence": float(
+                        confidence
+                    ),
+                    "source": "deberta",
+                    "validated": False,
                 }
 
-                current_confidences = [confidence]
-
-            # ---------------------------------------------
-            # Continuation of entity
-            # ---------------------------------------------
+            # -------------------------------------------------
+            # Continuation
+            # -------------------------------------------------
 
             elif prefix == "I":
 
                 if (
                     current_entity
-                    and current_entity["entity"]
+                    and current_entity["type"]
                     == entity_type
                 ):
-                    current_entity["end"] = token_end
 
-                    current_confidences.append(
-                        confidence
+                    current_entity["end"] = end
+
+                    current_entity[
+                        "value"
+                    ] = text[
+                        current_entity["start"]:
+                        end
+                    ]
+
+                    # Conservative confidence:
+                    # keep the lowest token confidence.
+                    current_entity[
+                        "confidence"
+                    ] = min(
+                        current_entity[
+                            "confidence"
+                        ],
+                        float(confidence)
                     )
 
                 else:
-                    # Unexpected I- tag.
-                    # Treat it as a new entity safely.
 
+                    # Invalid I- without matching B-
                     if current_entity:
-                        raw_entities.append(
-                            {
-                                **current_entity,
-                                "confidences":
-                                    current_confidences,
-                            }
+                        entities.append(
+                            current_entity
                         )
 
                     current_entity = {
-                        "entity": entity_type,
-                        "start": token_start,
-                        "end": token_end,
+                        "type": entity_type,
+                        "value": text[start:end],
+                        "start": start,
+                        "end": end,
+                        "confidence": float(
+                            confidence
+                        ),
+                        "source": "deberta",
+                        "validated": False,
                     }
 
-                    current_confidences = [confidence]
-
-        # -------------------------------------------------
-        # Add final entity
-        # -------------------------------------------------
-
         if current_entity:
-            raw_entities.append(
-                {
-                    **current_entity,
-                    "confidences": current_confidences,
-                }
-            )
-
-        # -------------------------------------------------
-        # Clean entity spans
-        # -------------------------------------------------
-
-        entities = []
-
-        for entity in raw_entities:
-
-            start = entity["start"]
-            end = entity["end"]
-
-            entity_text = text[start:end]
-
-            # Remove whitespace from beginning/end
-            stripped_text = entity_text.strip()
-
-            if not stripped_text:
-                continue
-
-            # Adjust character offsets after stripping
-            leading_spaces = len(
-                entity_text
-            ) - len(
-                entity_text.lstrip()
-            )
-
-            trailing_spaces = len(
-                entity_text
-            ) - len(
-                entity_text.rstrip()
-            )
-
-            start += leading_spaces
-            end -= trailing_spaces
-
-            confidences = entity["confidences"]
-
-            if confidences:
-                confidence = sum(
-                    confidences
-                ) / len(confidences)
-            else:
-                confidence = 0.0
-
             entities.append(
-                {
-                    "entity": entity["entity"],
-                    "start": start,
-                    "end": end,
-                    "confidence": round(
-                        float(confidence),
-                        4,
-                    ),
-                    "text": text[start:end],
-                }
+                current_entity
             )
 
-        # -------------------------------------------------
-        # Merge adjacent same-type entities
-        #
-        # Example:
-        #
-        # Rahul  -> NAME
-        # Sharma -> NAME
-        #
-        # becomes:
-        #
-        # Rahul Sharma -> NAME
-        # -------------------------------------------------
+        # -----------------------------------------------------
+        # Final cleanup
+        # -----------------------------------------------------
 
-        merged_entities = []
+        cleaned = []
 
         for entity in entities:
 
-            if not merged_entities:
-                merged_entities.append(entity)
+            value = entity["value"].strip()
+
+            if not value:
                 continue
 
-            previous = merged_entities[-1]
+            entity["value"] = value
 
-            gap = text[
-                previous["end"]:
-                entity["start"]
-            ]
-
-            same_entity_type = (
-                previous["entity"]
-                == entity["entity"]
+            entity["confidence"] = round(
+                float(entity["confidence"]),
+                4
             )
 
-            whitespace_gap = (
-                gap.strip() == ""
-            )
+            cleaned.append(entity)
 
-            if (
-                same_entity_type
-                and whitespace_gap
-            ):
-                # Merge spans
-
-                previous["end"] = entity["end"]
-
-                previous["text"] = text[
-                    previous["start"]:
-                    previous["end"]
-                ]
-
-                # Weighted-ish average based on
-                # character span length
-                previous_length = max(
-                    1,
-                    previous["end"]
-                    - previous["start"]
-                    - (
-                        entity["end"]
-                        - entity["start"]
-                    ),
-                )
-
-                current_length = max(
-                    1,
-                    entity["end"]
-                    - entity["start"],
-                )
-
-                previous["confidence"] = round(
-                    (
-                        previous["confidence"]
-                        * previous_length
-                        + entity["confidence"]
-                        * current_length
-                    )
-                    / (
-                        previous_length
-                        + current_length
-                    ),
-                    4,
-                )
-
-            else:
-                merged_entities.append(entity)
-
-        return merged_entities
+        return cleaned
 
 
 # ---------------------------------------------------------
-# Singleton model instance
+# Singleton
 # ---------------------------------------------------------
 
 _extractor = None
 
 
-def get_extractor() -> DeBERTaPIIExtractor:
-    """
-    Load the model once and reuse it.
-    """
+def get_extractor():
 
     global _extractor
 
     if _extractor is None:
-        _extractor = DeBERTaPIIExtractor()
+        _extractor = (
+            DeBERTaPIIExtractor()
+        )
 
     return _extractor
 
 
 # ---------------------------------------------------------
-# Convenience function
+# Public interface
 # ---------------------------------------------------------
 
 def extract_pii(
-    text: str,
+    text: str
 ) -> List[Dict[str, Any]]:
-    """
-    Simple public interface.
 
-    Example:
-        entities = extract_pii(text)
-    """
-
-    extractor = get_extractor()
-
-    return extractor.extract(text)
+    return get_extractor().extract(text)
