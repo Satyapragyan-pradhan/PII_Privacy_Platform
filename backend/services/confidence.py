@@ -12,14 +12,15 @@ def clamp(
 
 def calculate_confidence(entity) -> float:
     """
-    Calculate confidence using extraction source,
-    format validation and agreement between methods.
+    Calculate final confidence using:
+    - model/source confidence
+    - format validation
+    - agreement between extraction methods
     """
 
-    source = entity.get(
-        "source",
-        "unknown"
-    )
+    source = str(
+        entity.get("source", "unknown")
+    ).lower()
 
     format_valid = entity.get(
         "format_valid",
@@ -29,6 +30,10 @@ def calculate_confidence(entity) -> float:
     methods_agree = entity.get(
         "methods_agree",
         False
+    )
+
+    raw_confidence = float(
+        entity.get("confidence", 0.0)
     )
 
     # -----------------------------
@@ -60,15 +65,29 @@ def calculate_confidence(entity) -> float:
             score += 0.10
 
     # -----------------------------
+    # DeBERTa transformer
+    # -----------------------------
+
+    elif source == "deberta":
+
+        score = raw_confidence
+
+        if format_valid:
+            score += 0.05
+
+        if methods_agree:
+            score += 0.10
+
+    # -----------------------------
     # NLP
     # -----------------------------
 
     elif source == "nlp":
 
-        score = 0.65
+        score = raw_confidence or 0.65
 
         if methods_agree:
-            score += 0.15
+            score += 0.10
 
         if format_valid:
             score += 0.05
@@ -77,12 +96,12 @@ def calculate_confidence(entity) -> float:
     # LLM / contextual
     # -----------------------------
 
-    elif source == "llm/context":
+    elif "llm" in source or "context" in source:
 
-        score = 0.70
+        score = raw_confidence or 0.70
 
         if methods_agree:
-            score += 0.15
+            score += 0.10
 
         if format_valid:
             score += 0.05
