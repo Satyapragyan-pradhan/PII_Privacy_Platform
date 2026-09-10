@@ -1,22 +1,18 @@
 import io
 
 import pymupdf
-import cv2
 import numpy as np
 import pytesseract
 
 from PIL import Image
+from paddleocr import PaddleOCR
 
 from core.config import settings
 
-from ocr.variants import (
-    create_variants,
-    create_aadhaar_rois,
-    create_roi_variants,
-)
 
-from ocr.scorer import score_ocr
-
+# =========================================================
+# Tesseract configuration
+# =========================================================
 
 if settings.TESSERACT_CMD:
     pytesseract.pytesseract.tesseract_cmd = (
@@ -24,9 +20,49 @@ if settings.TESSERACT_CMD:
     )
 
 
+# =========================================================
+# PaddleOCR singleton
+# =========================================================
+
+_paddle_ocr = None
+
+
+def get_paddle_ocr():
+    """
+    Initialize PaddleOCR only once.
+
+    The model loading cost is paid only on the first OCR
+    request after the backend starts.
+    """
+
+    global _paddle_ocr
+
+    if _paddle_ocr is None:
+
+        print(
+            "[OCR] Initializing PaddleOCR..."
+        )
+
+        _paddle_ocr = PaddleOCR(
+            use_doc_orientation_classify=False,
+            use_doc_unwarping=False,
+            use_textline_orientation=False,
+        )
+
+        print(
+            "[OCR] PaddleOCR initialized successfully."
+        )
+
+    return _paddle_ocr
+
+
+# =========================================================
+# Tesseract fallback
+# =========================================================
+
 def run_tesseract(image, psm=6):
     """
-    Run Tesseract OCR.
+    Run Tesseract OCR as a fallback.
     """
 
     return pytesseract.image_to_string(
@@ -35,28 +71,81 @@ def run_tesseract(image, psm=6):
     ).strip()
 
 
-def ocr_image(content: bytes):
+# =========================================================
+# Extract PaddleOCR result
+# =========================================================
+
+def extract_paddle_result(result):
     """
-    Main OCR pipeline.
+    Extract recognized text and recognition scores
+    from PaddleOCR output.
 
-    Strategy:
-
-        Image
-          |
-          +--> Full-image variants
-          |
-          +--> Identity ROI
-          |
-          +--> Number ROI
-          |
-          +--> PII-aware scoring
-          |
-          +--> Merge useful OCR
+    Only rec_texts and rec_scores are passed into the
+    downstream PII extraction pipeline.
     """
 
-    # =========================================================
-    # Load image
-    # =========================================================
+    texts = []
+    scores = []
+
+    for item in result:
+
+        # PaddleOCR result objects support dictionary-style
+        # access for fields such as rec_texts/rec_scores.
+        try:
+            rec_texts = item["rec_texts"]
+            rec_scores = item["rec_scores"]
+
+        except Exception:
+
+            # Defensive fallback for object-style access.
+            rec_texts = getattr(
+                item,
+                "rec_texts",
+                []
+            )
+
+            rec_scores = getattr(
+                item,
+                "rec_scores",
+                []
+            )
+
+        if rec_texts is None:
+            rec_texts = []
+
+        if rec_scores is None:
+            rec_scores = []
+
+        for text, score in zip(
+            rec_texts,
+            rec_scores
+        ):
+
+            text = str(text).strip()
+
+            if not text:
+                continue
+
+            texts.append(text)
+            scores.append(
+                float(score)
+            )
+
+    return texts, scores
+
+
+# =========================================================
+# PaddleOCR
+# =========================================================
+
+def run_paddle_ocr(content: bytes):
+    """
+    Run PaddleOCR on an image.
+
+    Returns:
+        text
+        average OCR confidence
+    """
 
     image = Image.open(
         io.BytesIO(content)
@@ -66,203 +155,181 @@ def ocr_image(content: bytes):
         image
     )
 
-    opencv_image = cv2.cvtColor(
-        image_array,
-        cv2.COLOR_RGB2BGR
+    ocr = get_paddle_ocr()
+
+    print(
+        "[OCR] Running PaddleOCR..."
     )
 
-    # =========================================================
-    # 1. Full image variants
-    # =========================================================
-
-    variants = create_variants(
-        opencv_image
+    result = ocr.predict(
+        image_array
     )
 
-    results = []
+    texts, scores = extract_paddle_result(
+        result
+    )
 
-    for name, variant in variants.items():
-
-        psm = 11 if name.endswith("psm11") else 6
-
-        text = run_tesseract(
-            variant,
-            psm=psm
-        )
-
-        score = score_ocr(
-            text
-        )
-
+    if not texts:
         print(
-            f"[OCR] {name} | score={score}"
+            "[OCR] PaddleOCR returned no text."
         )
 
-        results.append({
-            "name": name,
-            "text": text,
-            "score": score,
-        })
-
-    # =========================================================
-    # 2. Aadhaar-style ROIs
-    # =========================================================
-
-    rois = create_aadhaar_rois(
-        opencv_image
-    )
-
-    roi_results = []
-
-    for roi_name, roi in rois.items():
-
-        roi_variants = create_roi_variants(
-            roi
-        )
-
-        for variant_name, variant in roi_variants.items():
-
-            text = run_tesseract(
-                variant,
-                psm=6
-            )
-
-            score = score_ocr(
-                text
-            )
-
-            full_name = (
-                f"{roi_name}_{variant_name}"
-            )
-
-            print(
-                f"[OCR] {full_name} | score={score}"
-            )
-
-            roi_results.append({
-                "name": full_name,
-                "roi": roi_name,
-                "text": text,
-                "score": score,
-            })
-
-    # =========================================================
-    # 3. Select best full-image OCR
-    # =========================================================
-
-    best_full = max(
-        results,
-        key=lambda x: x["score"],
-        default=None
-    )
-
-    # =========================================================
-    # 4. Select best result for each ROI
-    # =========================================================
-
-    best_identity = max(
-        (
-            r for r in roi_results
-            if r["roi"] == "identity"
-        ),
-        key=lambda x: x["score"],
-        default=None
-    )
-
-    best_number = max(
-        (
-            r for r in roi_results
-            if r["roi"] == "number"
-        ),
-        key=lambda x: x["score"],
-        default=None
-    )
-
-    # =========================================================
-    # Debug output
-    # =========================================================
-
-    if best_full:
-        print(
-            f"[OCR] Best full image: "
-            f"{best_full['name']} | "
-            f"score={best_full['score']}"
-        )
-
-    if best_identity:
-        print(
-            f"[OCR] Best identity ROI: "
-            f"{best_identity['name']} | "
-            f"score={best_identity['score']}"
-        )
-
-    if best_number:
-        print(
-            f"[OCR] Best number ROI: "
-            f"{best_number['name']} | "
-            f"score={best_number['score']}"
-        )
-
-    # =========================================================
-    # 5. Build combined OCR
-    # =========================================================
-
-    selected_parts = []
-
-    # Identity is more valuable than garbage full-image OCR
-    if (
-        best_identity
-        and best_identity["score"] > 0
-    ):
-        selected_parts.append(
-            best_identity["text"]
-        )
-
-    # Number ROI
-    if (
-        best_number
-        and best_number["score"] > 0
-    ):
-        selected_parts.append(
-            best_number["text"]
-        )
-
-    # ---------------------------------------------------------
-    # If ROIs produced nothing useful, fall back to full image
-    # ---------------------------------------------------------
-
-    if not selected_parts and best_full:
-        selected_parts.append(
-            best_full["text"]
-        )
+        return "", 0.0
 
     final_text = "\n".join(
-        part
-        for part in selected_parts
-        if part
+        texts
     ).strip()
 
-    print(
-        "\n========== SELECTED OCR OUTPUT =========="
+    average_score = (
+        sum(scores) / len(scores)
+        if scores
+        else 0.0
     )
 
-    print(final_text)
-
     print(
-        "=========================================="
+        f"[OCR] PaddleOCR detected "
+        f"{len(texts)} text regions."
     )
 
-    return final_text
+    print(
+        f"[OCR] Average recognition score: "
+        f"{average_score:.4f}"
+    )
 
+    print(
+        "\n========== PADDLE OCR OUTPUT =========="
+    )
+
+    for text, score in zip(
+        texts,
+        scores
+    ):
+        print(
+            f"[{score:.4f}] {text}"
+        )
+
+    print(
+        "======================================="
+    )
+
+    return final_text, average_score
+
+
+# =========================================================
+# Main image OCR
+# =========================================================
+
+def ocr_image(content: bytes):
+    """
+    Main OCR pipeline.
+
+    Strategy:
+
+        Image
+          |
+          v
+       PaddleOCR
+          |
+          +---- text found ----> downstream pipeline
+          |
+          +---- failed --------> Tesseract fallback
+    """
+
+    # -----------------------------------------------------
+    # 1. Primary OCR: PaddleOCR
+    # -----------------------------------------------------
+
+    try:
+
+        text, ocr_score = run_paddle_ocr(
+            content
+        )
+
+        if text.strip():
+
+            print(
+                f"[OCR] PaddleOCR selected "
+                f"(score={ocr_score:.4f})"
+            )
+
+            return text
+
+        print(
+            "[OCR] PaddleOCR produced no usable text."
+        )
+
+    except Exception as e:
+
+        print(
+            f"[OCR] PaddleOCR failed: {e}"
+        )
+
+    # -----------------------------------------------------
+    # 2. Fallback: Tesseract
+    # -----------------------------------------------------
+
+    print(
+        "[OCR] Falling back to Tesseract..."
+    )
+
+    try:
+
+        image = Image.open(
+            io.BytesIO(content)
+        ).convert("RGB")
+
+        text = run_tesseract(
+            image,
+            psm=6
+        )
+
+        if text.strip():
+
+            print(
+                "[OCR] Tesseract fallback succeeded."
+            )
+
+            return text
+
+    except Exception as e:
+
+        print(
+            f"[OCR] Tesseract fallback failed: {e}"
+        )
+
+    # -----------------------------------------------------
+    # 3. Nothing worked
+    # -----------------------------------------------------
+
+    print(
+        "[OCR] All OCR engines failed."
+    )
+
+    return ""
+
+
+# =========================================================
+# Scanned PDF OCR
+# =========================================================
 
 def ocr_pdf_pages(document):
     """
     OCR scanned PDF pages.
+
+    Each page is rendered to an image and passed through
+    the same PaddleOCR-first pipeline.
     """
 
     text_parts = []
 
-    for page_number, page in enumerate(document):
+    for page_number, page in enumerate(
+        document
+    ):
+
+        print(
+            f"\n[OCR] Processing PDF page "
+            f"{page_number + 1}"
+        )
 
         pixmap = page.get_pixmap(
             matrix=pymupdf.Matrix(2, 2)
@@ -279,7 +346,8 @@ def ocr_pdf_pages(document):
         if text:
 
             text_parts.append(
-                f"Page {page_number + 1}\n{text}"
+                f"Page {page_number + 1}\n"
+                f"{text}"
             )
 
     return "\n".join(

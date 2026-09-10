@@ -9,28 +9,40 @@ router = APIRouter()
 
 
 @router.post("/extract")
-async def extract_pii(file: UploadFile = File(...)):
-    if not file:
+async def extract_pii(
+    files: List[UploadFile] = File(...)
+):
+    if not files:
         raise HTTPException(
             status_code=400,
-            detail="No file provided"
+            detail="No files provided"
         )
 
     start_time = time.perf_counter()
 
-    content = await file.read()
+    documents = []
 
-    if not content:
+    for file in files:
+
+        if not file:
+            continue
+
+        content = await file.read()
+
+        if not content:
+            continue
+
+        documents.append({
+            "filename": file.filename,
+            "content_type": file.content_type,
+            "content": content
+        })
+
+    if not documents:
         raise HTTPException(
             status_code=400,
-            detail="Uploaded file is empty"
+            detail="All uploaded files are empty"
         )
-
-    documents = [{
-        "filename": file.filename,
-        "content_type": file.content_type,
-        "content": content
-    }]
 
     result = process_documents(documents)
 

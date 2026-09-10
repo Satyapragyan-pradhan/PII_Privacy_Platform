@@ -20,12 +20,7 @@ class GraphState(TypedDict):
     final_entities: List[Dict[str, Any]]
 
 
-# =========================================================
-# REGEX
-# =========================================================
-
 def regex_node(state: GraphState):
-
     return {
         "regex_entities": extract_regex_entities(
             state["text"]
@@ -33,12 +28,7 @@ def regex_node(state: GraphState):
     }
 
 
-# =========================================================
-# DEBERTA / NLP
-# =========================================================
-
 def nlp_node(state: GraphState):
-
     entities = extract_nlp_entities(
         state["text"]
     )
@@ -55,9 +45,94 @@ def nlp_node(state: GraphState):
     }
 
 
-# =========================================================
-# PRELIMINARY RECONCILIATION
-# =========================================================
+def is_related_person_name(
+    entity: Dict[str, Any],
+    text: str
+) -> bool:
+
+    if str(
+        entity.get("type", "")
+    ).upper() != "NAME":
+        return False
+
+    start = entity.get("start")
+
+    if start is None:
+        return False
+
+    context_start = max(
+        0,
+        int(start) - 100
+    )
+
+    preceding_text = text[
+        context_start:int(start)
+    ].lower()
+
+    preceding_text = (
+        preceding_text
+        .replace("’", "'")
+        .replace("`", "'")
+    )
+
+    related_labels = [
+        "father's name",
+        "father name",
+        "fathers name",
+        "mother's name",
+        "mother name",
+        "mothers name",
+        "spouse's name",
+        "spouse name",
+        "spouses name",
+        "husband's name",
+        "husband name",
+        "wife's name",
+        "wife name",
+        "guardian's name",
+        "guardian name",
+        "son of",
+        "daughter of",
+        "s/o",
+        "d/o",
+        "w/o",
+        "c/o",
+    ]
+
+    for label in related_labels:
+
+        if label in preceding_text:
+
+            print(
+                f"[ROLE] Related-person NAME detected: "
+                f"{entity.get('value')} "
+                f"(label: {label})"
+            )
+
+            return True
+
+    return False
+
+
+def filter_primary_person_entities(
+    entities: List[Dict[str, Any]],
+    text: str
+) -> List[Dict[str, Any]]:
+
+    filtered = []
+
+    for entity in entities:
+
+        if is_related_person_name(
+            entity,
+            text
+        ):
+            continue
+
+        filtered.append(entity)
+
+    return filtered
+
 
 def preliminary_node(state: GraphState):
 
@@ -65,6 +140,11 @@ def preliminary_node(state: GraphState):
         state.get("regex_entities", [])
         +
         state.get("nlp_entities", [])
+    )
+
+    entities = filter_primary_person_entities(
+        entities,
+        state["text"]
     )
 
     preliminary = reconcile_entities(
@@ -84,9 +164,110 @@ def preliminary_node(state: GraphState):
     }
 
 
-# =========================================================
-# LLM FALLBACK
-# =========================================================
+LOW_CONFIDENCE_THRESHOLD = 0.70
+
+
+def detect_document_profile(preliminary):
+
+    detected_types = {
+        str(entity.get("type", "")).upper()
+        for entity in preliminary
+    }
+
+    if "PAN" in detected_types:
+        return {
+            "document_type": "PAN",
+            "expected_types": {
+                "NAME",
+                "DOB",
+            }
+        }
+
+    if "AADHAAR" in detected_types:
+        return {
+            "document_type": "AADHAAR",
+            "expected_types": {
+                "NAME",
+                "DOB",
+                "ADDRESS",
+            }
+        }
+
+    if "DRIVING_LICENCE" in detected_types:
+        return {
+            "document_type": "DRIVING_LICENCE",
+            "expected_types": {
+                "NAME",
+                "DOB",
+                "ADDRESS",
+            }
+        }
+
+    if "VOTER_ID" in detected_types:
+        return {
+            "document_type": "VOTER_ID",
+            "expected_types": {
+                "NAME",
+                "ADDRESS",
+            }
+        }
+
+    return {
+        "document_type": "GENERIC",
+        "expected_types": set()
+    }
+
+
+def find_low_confidence_entities(preliminary):
+
+    low_confidence = []
+
+    for entity in preliminary:
+
+        confidence = float(
+            entity.get(
+                "confidence",
+                0.0
+            )
+        )
+
+        if confidence < LOW_CONFIDENCE_THRESHOLD:
+            low_confidence.append(entity)
+
+    return low_confidence
+
+
+def find_conflicts(preliminary):
+
+    values_by_type = {}
+
+    for entity in preliminary:
+
+        entity_type = str(
+            entity.get("type", "")
+        ).upper()
+
+        value = str(
+            entity.get("value", "")
+        ).strip().lower()
+
+        if not entity_type or not value:
+            continue
+
+        values_by_type.setdefault(
+            entity_type,
+            set()
+        ).add(value)
+
+    conflicts = []
+
+    for entity_type, values in values_by_type.items():
+
+        if len(values) > 1:
+            conflicts.append(entity_type)
+
+    return conflicts
+
 
 def context_node(state: GraphState):
 
@@ -95,31 +276,91 @@ def context_node(state: GraphState):
         []
     )
 
-    # Only these entities require contextual understanding.
-    contextual_types = {
-        "NAME",
-        "ADDRESS",
-        "DOB"
-    }
+    profile = detect_document_profile(
+        preliminary
+    )
 
-    detected = {
+    document_type = profile[
+        "document_type"
+    ]
+
+    expected_types = profile[
+        "expected_types"
+    ]
+
+    detected_types = {
         str(entity.get("type", "")).upper()
         for entity in preliminary
     }
 
-    missing = contextual_types - detected
+    missing = (
+        expected_types
+        - detected_types
+    )
+
+    low_confidence = (
+        find_low_confidence_entities(
+            preliminary
+        )
+    )
+
+    conflicts = find_conflicts(
+        preliminary
+    )
 
     print(
-        "\nMissing contextual types:",
+        "\n========== LLM FALLBACK CHECK =========="
+    )
+
+    print(
+        "Document profile:",
+        document_type
+    )
+
+    print(
+        "Expected contextual types:",
+        expected_types
+    )
+
+    print(
+        "Detected types:",
+        detected_types
+    )
+
+    print(
+        "Missing relevant types:",
         missing
     )
 
-    # If DeBERTa/Regex already found all
-    # contextual entities, DO NOT call LLM.
-    if not missing:
+    print(
+        "Low-confidence entities:",
+        low_confidence
+    )
+
+    print(
+        "Conflicting types:",
+        conflicts
+    )
+
+    llm_required = (
+        bool(missing)
+        or bool(low_confidence)
+        or bool(conflicts)
+    )
+
+    if not llm_required:
 
         print(
             "LLM fallback skipped."
+        )
+
+        print(
+            "Reason: extraction is sufficient "
+            "and unambiguous."
+        )
+
+        print(
+            "=======================================\n"
         )
 
         return {
@@ -130,6 +371,10 @@ def context_node(state: GraphState):
         "LLM fallback activated."
     )
 
+    print(
+        "=======================================\n"
+    )
+
     return {
         "contextual_entities":
             contextual_extract(
@@ -137,10 +382,6 @@ def context_node(state: GraphState):
             )
     }
 
-
-# =========================================================
-# FINAL RECONCILIATION
-# =========================================================
 
 def final_reconciliation_node(
     state: GraphState
@@ -154,6 +395,11 @@ def final_reconciliation_node(
         state.get("contextual_entities", [])
     )
 
+    entities = filter_primary_person_entities(
+        entities,
+        state["text"]
+    )
+
     final = reconcile_entities(
         entities,
         state["text"]
@@ -163,10 +409,6 @@ def final_reconciliation_node(
         "final_entities": final
     }
 
-
-# =========================================================
-# BUILD GRAPH
-# =========================================================
 
 def build_graph():
 

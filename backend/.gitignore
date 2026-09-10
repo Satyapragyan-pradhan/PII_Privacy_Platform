@@ -75,3 +75,5 @@ str
 
 # Training checkpoints
 transformer/model/*/checkpoint-*/
+
+ocr/test_paddle.py
