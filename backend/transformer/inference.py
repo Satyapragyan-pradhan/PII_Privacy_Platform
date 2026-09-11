@@ -2,15 +2,12 @@ import os
 from typing import List, Dict, Any
 
 import torch
+
 from transformers import (
     AutoTokenizer,
     AutoModelForTokenClassification,
 )
 
-
-# ---------------------------------------------------------
-# Model configuration
-# ---------------------------------------------------------
 
 BASE_DIR = os.path.dirname(
     os.path.dirname(
@@ -26,10 +23,6 @@ MODEL_PATH = os.path.join(
 )
 
 
-# ---------------------------------------------------------
-# DeBERTa PII NER
-# ---------------------------------------------------------
-
 class DeBERTaPIIExtractor:
 
     def __init__(
@@ -42,6 +35,7 @@ class DeBERTaPIIExtractor:
         if not os.path.exists(
             self.model_path
         ):
+
             raise FileNotFoundError(
                 f"DeBERTa model not found at: "
                 f"{self.model_path}"
@@ -73,7 +67,10 @@ class DeBERTaPIIExtractor:
             else "cpu"
         )
 
-        self.model.to(self.device)
+        self.model.to(
+            self.device
+        )
+
         self.model.eval()
 
         print(
@@ -86,10 +83,27 @@ class DeBERTaPIIExtractor:
             f"{self.model.config.num_labels}"
         )
 
+    def _new_entity(
+        self,
+        entity_type: str,
+        text: str,
+        start: int,
+        end: int,
+        confidence: float
+    ) -> Dict[str, Any]:
 
-    # -----------------------------------------------------
-    # Extract entities
-    # -----------------------------------------------------
+        return {
+            "type": entity_type.upper(),
+            "value": text[start:end].strip(),
+            "start": start,
+            "end": end,
+            "confidence": round(
+                float(confidence),
+                4
+            ),
+            "source": "deberta",
+            "validated": False,
+        }
 
     def extract(
         self,
@@ -108,17 +122,24 @@ class DeBERTaPIIExtractor:
         )
 
         offset_mapping = (
-            encoded.pop("offset_mapping")[0]
+            encoded.pop(
+                "offset_mapping"
+            )[0]
             .tolist()
         )
 
         inputs = {
-            key: value.to(self.device)
+            key: value.to(
+                self.device
+            )
             for key, value in encoded.items()
         }
 
         with torch.no_grad():
-            outputs = self.model(**inputs)
+
+            outputs = self.model(
+                **inputs
+            )
 
         probabilities = torch.softmax(
             outputs.logits,
@@ -136,11 +157,8 @@ class DeBERTaPIIExtractor:
         ).values[0]
 
         entities = []
-        current_entity = None
 
-        # -------------------------------------------------
-        # BIO decoding
-        # -------------------------------------------------
+        current_entity = None
 
         for i, (
             prediction,
@@ -152,142 +170,140 @@ class DeBERTaPIIExtractor:
             )
         ):
 
-            start, end = offset_mapping[i]
+            start, end = (
+                offset_mapping[i]
+            )
 
-            # Special tokens
             if start == end:
                 continue
 
-            label = self.model.config.id2label[
-                prediction
-            ]
+            label = self.model.config.id2label.get(
+                prediction,
+                "O"
+            )
 
             if label == "O":
 
                 if current_entity:
+
                     entities.append(
                         current_entity
                     )
 
-                current_entity = None
+                    current_entity = None
+
                 continue
 
             if "-" not in label:
                 continue
 
-            prefix, entity_type = label.split(
-                "-",
-                1
+            prefix, entity_type = (
+                label.split(
+                    "-",
+                    1
+                )
             )
 
-            # -------------------------------------------------
-            # Beginning of entity
-            # -------------------------------------------------
+            entity_type = entity_type.upper()
 
             if prefix == "B":
 
                 if current_entity:
+
                     entities.append(
                         current_entity
                     )
 
-                current_entity = {
-                    "type": entity_type,
-                    "value": text[start:end],
-                    "start": start,
-                    "end": end,
-                    "confidence": float(
+                current_entity = (
+                    self._new_entity(
+                        entity_type,
+                        text,
+                        start,
+                        end,
                         confidence
-                    ),
-                    "source": "deberta",
-                    "validated": False,
-                }
+                    )
+                )
 
-            # -------------------------------------------------
-            # Continuation
-            # -------------------------------------------------
+                continue
 
-            elif prefix == "I":
+            if prefix == "I":
 
                 if (
                     current_entity
-                    and current_entity["type"]
+                    and
+                    current_entity["type"]
                     == entity_type
                 ):
 
                     current_entity["end"] = end
 
-                    current_entity[
-                        "value"
-                    ] = text[
-                        current_entity["start"]:
-                        end
-                    ]
+                    current_entity["value"] = (
+                        text[
+                            current_entity["start"]:
+                            end
+                        ].strip()
+                    )
 
-                    # Conservative confidence:
-                    # keep the lowest token confidence.
                     current_entity[
                         "confidence"
-                    ] = min(
-                        current_entity[
-                            "confidence"
-                        ],
-                        float(confidence)
+                    ] = round(
+                        min(
+                            float(
+                                current_entity[
+                                    "confidence"
+                                ]
+                            ),
+                            float(confidence)
+                        ),
+                        4
                     )
 
                 else:
 
-                    # Invalid I- without matching B-
                     if current_entity:
+
                         entities.append(
                             current_entity
                         )
 
-                    current_entity = {
-                        "type": entity_type,
-                        "value": text[start:end],
-                        "start": start,
-                        "end": end,
-                        "confidence": float(
+                    current_entity = (
+                        self._new_entity(
+                            entity_type,
+                            text,
+                            start,
+                            end,
                             confidence
-                        ),
-                        "source": "deberta",
-                        "validated": False,
-                    }
+                        )
+                    )
 
         if current_entity:
+
             entities.append(
                 current_entity
             )
-
-        # -----------------------------------------------------
-        # Final cleanup
-        # -----------------------------------------------------
 
         cleaned = []
 
         for entity in entities:
 
-            value = entity["value"].strip()
+            value = str(
+                entity.get(
+                    "value",
+                    ""
+                )
+            ).strip()
 
             if not value:
                 continue
 
             entity["value"] = value
 
-            entity["confidence"] = round(
-                float(entity["confidence"]),
-                4
+            cleaned.append(
+                entity
             )
-
-            cleaned.append(entity)
 
         return cleaned
 
-
-# ---------------------------------------------------------
-# Singleton
-# ---------------------------------------------------------
 
 _extractor = None
 
@@ -297,6 +313,7 @@ def get_extractor():
     global _extractor
 
     if _extractor is None:
+
         _extractor = (
             DeBERTaPIIExtractor()
         )
@@ -304,12 +321,10 @@ def get_extractor():
     return _extractor
 
 
-# ---------------------------------------------------------
-# Public interface
-# ---------------------------------------------------------
-
 def extract_pii(
     text: str
 ) -> List[Dict[str, Any]]:
 
-    return get_extractor().extract(text)
+    return get_extractor().extract(
+        text
+    )

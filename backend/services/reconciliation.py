@@ -1,11 +1,13 @@
 import re
+
 from datetime import datetime
 from typing import List, Dict, Any
 
+from services.candidate_scoring import (
+    candidate_quality,
+    choose_better,
+)
 
-# =========================================================
-# Canonical Types
-# =========================================================
 
 TYPE_ALIASES = {
     "NAME": "NAME",
@@ -23,17 +25,22 @@ TYPE_ALIASES = {
 }
 
 
-def canonical_type(entity_type: str) -> str:
-    key = str(entity_type or "").strip().upper()
+def canonical_type(
+    entity_type: str
+) -> str:
+
+    key = str(
+        entity_type or ""
+    ).strip().upper()
+
     return TYPE_ALIASES.get(
         key,
-        key.replace(" ", "_")
+        key.replace(
+            " ",
+            "_"
+        )
     )
 
-
-# =========================================================
-# Validation Patterns
-# =========================================================
 
 PAN_PATTERN = re.compile(
     r"^[A-Z]{5}[0-9]{4}[A-Z]$"
@@ -59,6 +66,7 @@ VOTER_PATTERN = re.compile(
     r"^[A-Z]{3}\d{7}$"
 )
 
+
 DOB_PATTERNS = [
     "%d/%m/%Y",
     "%d-%m-%Y",
@@ -75,17 +83,21 @@ DL_STATE_CODES = {
 }
 
 
-# =========================================================
-# Basic Normalization
-# =========================================================
+def normalize(
+    value: Any
+) -> str:
 
-def normalize(value: Any) -> str:
     return " ".join(
-        str(value or "").strip().split()
+        str(
+            value or ""
+        ).strip().split()
     )
 
 
-def compact(value: Any) -> str:
+def compact(
+    value: Any
+) -> str:
+
     return re.sub(
         r"[\s-]",
         "",
@@ -93,11 +105,9 @@ def compact(value: Any) -> str:
     )
 
 
-# =========================================================
-# Phone Normalization
-# =========================================================
-
-def normalize_phone(value: str) -> str:
+def normalize_phone(
+    value: str
+) -> str:
 
     phone = re.sub(
         r"\D",
@@ -105,20 +115,22 @@ def normalize_phone(value: str) -> str:
         normalize(value)
     )
 
-    # +91XXXXXXXXXX -> XXXXXXXXXX
-    if phone.startswith("91") and len(phone) == 12:
+    if (
+        phone.startswith("91")
+        and len(phone) == 12
+    ):
         phone = phone[2:]
 
     return phone
 
 
-# =========================================================
-# DOB Normalization
-# =========================================================
+def normalize_dob(
+    value: str
+):
 
-def normalize_dob(value: str):
-
-    value = normalize(value)
+    value = normalize(
+        value
+    )
 
     for pattern in DOB_PATTERNS:
 
@@ -129,7 +141,6 @@ def normalize_dob(value: str):
                 pattern
             )
 
-            # Canonical representation
             return date.strftime(
                 "%Y-%m-%d"
             )
@@ -140,17 +151,18 @@ def normalize_dob(value: str):
     return value
 
 
-# =========================================================
-# Validation
-# =========================================================
-
 def validate_entity(
     entity_type: str,
     value: str
 ) -> bool:
 
-    t = canonical_type(entity_type)
-    v = normalize(value)
+    t = canonical_type(
+        entity_type
+    )
+
+    v = normalize(
+        value
+    )
 
     if not v:
         return False
@@ -182,15 +194,21 @@ def validate_entity(
     if t == "EMAIL":
 
         return bool(
-            EMAIL_PATTERN.fullmatch(v)
+            EMAIL_PATTERN.fullmatch(
+                v
+            )
         )
 
     if t == "DRIVING_LICENCE":
 
-        v = compact(v).upper()
+        v = compact(
+            v
+        ).upper()
 
         return bool(
-            DL_PATTERN.fullmatch(v)
+            DL_PATTERN.fullmatch(
+                v
+            )
             and v[:2] in DL_STATE_CODES
         )
 
@@ -202,8 +220,6 @@ def validate_entity(
             )
         )
 
-    # Semantic entities are handled by
-    # DeBERTa / contextual model.
     if t in {
         "NAME",
         "ADDRESS",
@@ -215,51 +231,45 @@ def validate_entity(
     return False
 
 
-# =========================================================
-# Entity Key
-# =========================================================
-
 def entity_key(
     entity: Dict[str, Any]
 ):
 
     t = canonical_type(
-        entity.get("type", "")
+        entity.get(
+            "type",
+            ""
+        )
     )
 
     value = normalize(
-        entity.get("value", "")
+        entity.get(
+            "value",
+            ""
+        )
     )
 
-    # Phone:
-    # 9876543210
-    # +91 9876543210
-    # +919876543210
-    # become identical.
     if t == "PHONE":
 
         value = normalize_phone(
             value
         )
 
-    # DOB:
-    # 15/08/2004
-    # 15-08-2004
-    # become identical.
     elif t == "DOB":
 
         value = normalize_dob(
             value
         )
 
-    # Numeric identifiers
     elif t in {
         "AADHAAR",
         "DRIVING_LICENCE",
         "VOTER_ID"
     }:
 
-        value = compact(value)
+        value = compact(
+            value
+        )
 
     else:
 
@@ -268,69 +278,6 @@ def entity_key(
     return t, value
 
 
-# =========================================================
-# Source Priority
-# =========================================================
-
-def source_priority(
-    entity: Dict[str, Any]
-) -> int:
-
-    source = str(
-        entity.get(
-            "source",
-            ""
-        )
-    ).lower()
-
-    if source == "regex":
-        return 3
-
-    if source == "deberta":
-        return 2
-
-    if "llm" in source:
-        return 1
-
-    return 0
-
-
-# =========================================================
-# Choose Better Entity
-# =========================================================
-
-def choose_better(
-    a: Dict[str, Any],
-    b: Dict[str, Any]
-):
-
-    pa = source_priority(a)
-    pb = source_priority(b)
-
-    if pb > pa:
-        return b.copy()
-
-    if pa > pb:
-        return a.copy()
-
-    ca = float(
-        a.get("confidence", 0)
-    )
-
-    cb = float(
-        b.get("confidence", 0)
-    )
-
-    if cb > ca:
-        return b.copy()
-
-    return a.copy()
-
-
-# =========================================================
-# Span Overlap
-# =========================================================
-
 def spans_overlap(
     a: Dict[str, Any],
     b: Dict[str, Any]
@@ -338,7 +285,6 @@ def spans_overlap(
 
     s1 = a.get("start")
     e1 = a.get("end")
-
     s2 = b.get("start")
     e2 = b.get("end")
 
@@ -356,16 +302,13 @@ def spans_overlap(
     )
 
 
-# =========================================================
-# Name Fragment Merge
-# =========================================================
-
 def merge_name_fragments(
     entities
 ):
 
     names = [
-        e for e in entities
+        e
+        for e in entities
         if canonical_type(
             e.get("type")
         ) == "NAME"
@@ -374,7 +317,8 @@ def merge_name_fragments(
     ]
 
     others = [
-        e for e in entities
+        e
+        for e in entities
         if canonical_type(
             e.get("type")
         ) != "NAME"
@@ -392,13 +336,14 @@ def merge_name_fragments(
 
         if not merged:
 
-            merged.append(current)
+            merged.append(
+                current
+            )
+
             continue
 
         previous = merged[-1]
 
-        # Example:
-        # Rhu1 + Sharma
         if (
             current["start"]
             - previous["end"]
@@ -434,23 +379,37 @@ def merge_name_fragments(
                 )
             )
 
+            previous["context_score"] = max(
+                float(
+                    previous.get(
+                        "context_score",
+                        0
+                    )
+                ),
+                float(
+                    current.get(
+                        "context_score",
+                        0
+                    )
+                )
+            )
+
         else:
 
-            merged.append(current)
+            merged.append(
+                current
+            )
 
     return others + merged
 
-
-# =========================================================
-# Address Fragment Merge
-# =========================================================
 
 def merge_address_fragments(
     entities
 ):
 
     addresses = [
-        e for e in entities
+        e
+        for e in entities
         if canonical_type(
             e.get("type")
         ) == "ADDRESS"
@@ -459,7 +418,8 @@ def merge_address_fragments(
     ]
 
     others = [
-        e for e in entities
+        e
+        for e in entities
         if canonical_type(
             e.get("type")
         ) != "ADDRESS"
@@ -477,7 +437,10 @@ def merge_address_fragments(
 
         if not merged:
 
-            merged.append(current)
+            merged.append(
+                current
+            )
+
             continue
 
         previous = merged[-1]
@@ -517,16 +480,29 @@ def merge_address_fragments(
                 )
             )
 
+            previous["context_score"] = max(
+                float(
+                    previous.get(
+                        "context_score",
+                        0
+                    )
+                ),
+                float(
+                    current.get(
+                        "context_score",
+                        0
+                    )
+                )
+            )
+
         else:
 
-            merged.append(current)
+            merged.append(
+                current
+            )
 
     return others + merged
 
-
-# =========================================================
-# Main Reconciliation
-# =========================================================
 
 def reconcile_entities(
     entities: List[Dict[str, Any]],
@@ -536,45 +512,51 @@ def reconcile_entities(
     if not entities:
         return []
 
-    # -----------------------------------------------------
-    # 1. Normalize + validate
-    # -----------------------------------------------------
-
     candidates = []
 
     for entity in entities:
-     
 
-     e = entity.copy()
+        e = entity.copy()
 
-     e["type"] = canonical_type(
-        e.get("type", e.get("entity", ""))
-    )
+        e["type"] = canonical_type(
+            e.get(
+                "type",
+                e.get(
+                    "entity",
+                    ""
+                )
+            )
+        )
 
-     e["value"] = normalize(
-        e.get("value", e.get("text", ""))
-    )
+        e["value"] = normalize(
+            e.get(
+                "value",
+                e.get(
+                    "text",
+                    ""
+                )
+            )
+        )
 
-     if not e["type"] or not e["value"]:
-        continue
+        if (
+            not e["type"]
+            or not e["value"]
+        ):
+            continue
 
-     e["format_valid"] = validate_entity(
-        e["type"],
-        e["value"]
-    )
+        e["format_valid"] = (
+            validate_entity(
+                e["type"],
+                e["value"]
+            )
+        )
 
-    # -----------------------------------------------------
-    # Reject invalid model predictions
-    # -----------------------------------------------------
+        if not e["format_valid"]:
+            continue
 
-     if not e["format_valid"]:
-        continue
-
-     candidates.append(e)
-
-    # -----------------------------------------------------
-    # 2. Reconcile identical entities
-    # -----------------------------------------------------
+        candidates.append(
+            e
+        )
 
     unique = {}
 
@@ -601,14 +583,10 @@ def reconcile_entities(
             candidate
         )
 
-        # Multiple extraction methods
-        # found the same entity.
         better[
             "methods_agree"
         ] = True
 
-        # If either method validated
-        # the entity, preserve validation.
         better[
             "format_valid"
         ] = (
@@ -616,7 +594,8 @@ def reconcile_entities(
                 "format_valid",
                 False
             )
-            or candidate.get(
+            or
+            candidate.get(
                 "format_valid",
                 False
             )
@@ -628,10 +607,6 @@ def reconcile_entities(
         unique.values()
     )
 
-    # -----------------------------------------------------
-    # 3. Merge model fragments
-    # -----------------------------------------------------
-
     reconciled = merge_name_fragments(
         reconciled
     )
@@ -640,23 +615,13 @@ def reconcile_entities(
         reconciled
     )
 
-    # -----------------------------------------------------
-    # 4. Resolve overlapping entities
-    # -----------------------------------------------------
-
     reconciled.sort(
         key=lambda e: (
             e.get(
                 "start",
                 10**9
             ),
-            -source_priority(e),
-            -float(
-                e.get(
-                    "confidence",
-                    0
-                )
-            )
+            -candidate_quality(e)
         )
     )
 
@@ -674,17 +639,15 @@ def reconcile_entities(
             ):
                 continue
 
-            # Same normalized entity
             if (
                 entity_key(candidate)
-                == entity_key(existing)
+                ==
+                entity_key(existing)
             ):
 
                 conflict = True
                 break
 
-            # Same type + overlapping span
-            # -> stronger source wins.
             if (
                 canonical_type(
                     candidate["type"]
@@ -695,14 +658,22 @@ def reconcile_entities(
                 )
             ):
 
-                if (
-                    source_priority(
-                        existing
-                    )
-                    >=
-                    source_priority(
+                candidate_quality_score = (
+                    candidate_quality(
                         candidate
                     )
+                )
+
+                existing_quality_score = (
+                    candidate_quality(
+                        existing
+                    )
+                )
+
+                if (
+                    existing_quality_score
+                    >=
+                    candidate_quality_score
                 ):
 
                     conflict = True
@@ -710,11 +681,9 @@ def reconcile_entities(
 
         if not conflict:
 
-            final.append(candidate)
-
-    # -----------------------------------------------------
-    # 5. Document order
-    # -----------------------------------------------------
+            final.append(
+                candidate
+            )
 
     final.sort(
         key=lambda e: e.get(

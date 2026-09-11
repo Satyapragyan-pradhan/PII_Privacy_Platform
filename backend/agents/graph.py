@@ -5,7 +5,14 @@ from langgraph.graph import StateGraph, END
 from extraction.regex import extract_regex_entities
 from extraction.nlp import extract_nlp_entities
 from extraction.contextual import contextual_extract
-from services.reconciliation import reconcile_entities
+
+from models.context_classifier import (
+    classify_entity_context
+)
+
+from services.reconciliation import (
+    reconcile_entities
+)
 
 
 class GraphState(TypedDict):
@@ -20,15 +27,23 @@ class GraphState(TypedDict):
     final_entities: List[Dict[str, Any]]
 
 
-def regex_node(state: GraphState):
+def regex_node(
+    state: GraphState
+):
+
+    entities = extract_regex_entities(
+        state["text"]
+    )
+
     return {
-        "regex_entities": extract_regex_entities(
-            state["text"]
-        )
+        "regex_entities": entities
     }
 
 
-def nlp_node(state: GraphState):
+def nlp_node(
+    state: GraphState
+):
+
     entities = extract_nlp_entities(
         state["text"]
     )
@@ -45,88 +60,72 @@ def nlp_node(state: GraphState):
     }
 
 
-def is_related_person_name(
-    entity: Dict[str, Any],
-    text: str
-) -> bool:
-
-    if str(
-        entity.get("type", "")
-    ).upper() != "NAME":
-        return False
-
-    start = entity.get("start")
-
-    if start is None:
-        return False
-
-    context_start = max(
-        0,
-        int(start) - 100
-    )
-
-    preceding_text = text[
-        context_start:int(start)
-    ].lower()
-
-    preceding_text = (
-        preceding_text
-        .replace("’", "'")
-        .replace("`", "'")
-    )
-
-    related_labels = [
-        "father's name",
-        "father name",
-        "fathers name",
-        "mother's name",
-        "mother name",
-        "mothers name",
-        "spouse's name",
-        "spouse name",
-        "spouses name",
-        "husband's name",
-        "husband name",
-        "wife's name",
-        "wife name",
-        "guardian's name",
-        "guardian name",
-        "son of",
-        "daughter of",
-        "s/o",
-        "d/o",
-        "w/o",
-        "c/o",
-    ]
-
-    for label in related_labels:
-
-        if label in preceding_text:
-
-            print(
-                f"[ROLE] Related-person NAME detected: "
-                f"{entity.get('value')} "
-                f"(label: {label})"
-            )
-
-            return True
-
-    return False
-
-
-def filter_primary_person_entities(
+def classify_context(
     entities: List[Dict[str, Any]],
     text: str
+) -> List[Dict[str, Any]]:
+
+    return [
+        classify_entity_context(
+            entity,
+            text
+        )
+        for entity in entities
+    ]
+
+
+def filter_non_primary(
+    entities: List[Dict[str, Any]]
 ) -> List[Dict[str, Any]]:
 
     filtered = []
 
     for entity in entities:
 
-        if is_related_person_name(
-            entity,
-            text
+        role = entity.get(
+            "context_role",
+            "unknown"
+        )
+
+        entity_type = str(
+            entity.get(
+                "type",
+                ""
+            )
+        ).upper()
+
+        if (
+            role == "secondary_person"
+            and entity_type == "NAME"
         ):
+
+            print(
+                f"[ROLE] Secondary NAME rejected: "
+                f"{entity.get('value')} "
+                f"(label: "
+                f"{entity.get('context_label')})"
+            )
+
+            continue
+
+        if (
+            role == "non_target"
+            and entity_type in {
+                "EMAIL",
+                "PHONE",
+                "DOB",
+                "ADDRESS"
+            }
+        ):
+
+            print(
+                f"[ROLE] Non-target "
+                f"{entity_type} rejected: "
+                f"{entity.get('value')} "
+                f"(label: "
+                f"{entity.get('context_label')})"
+            )
+
             continue
 
         filtered.append(entity)
@@ -134,17 +133,48 @@ def filter_primary_person_entities(
     return filtered
 
 
-def preliminary_node(state: GraphState):
+def preliminary_node(
+    state: GraphState
+):
 
     entities = (
-        state.get("regex_entities", [])
+        state.get(
+            "regex_entities",
+            []
+        )
         +
-        state.get("nlp_entities", [])
+        state.get(
+            "nlp_entities",
+            []
+        )
     )
 
-    entities = filter_primary_person_entities(
+    entities = classify_context(
         entities,
         state["text"]
+    )
+
+    entities = filter_non_primary(
+        entities
+    )
+
+    print(
+        "\n========== CONTEXT =========="
+    )
+
+    for entity in entities:
+
+        print(
+            f"{entity.get('type')} | "
+            f"{entity.get('value')} | "
+            f"role={entity.get('context_role')} | "
+            f"score={entity.get('context_score')} | "
+            f"label={entity.get('context_label')} | "
+            f"model={entity.get('context_model')}"
+        )
+
+    print(
+        "=============================\n"
     )
 
     preliminary = reconcile_entities(
@@ -152,12 +182,16 @@ def preliminary_node(state: GraphState):
         state["text"]
     )
 
-    print("\n========== PRELIMINARY ==========")
+    print(
+        "\n========== PRELIMINARY =========="
+    )
 
     for entity in preliminary:
         print(entity)
 
-    print("=================================\n")
+    print(
+        "=================================\n"
+    )
 
     return {
         "preliminary_entities": preliminary
@@ -167,58 +201,9 @@ def preliminary_node(state: GraphState):
 LOW_CONFIDENCE_THRESHOLD = 0.70
 
 
-def detect_document_profile(preliminary):
-
-    detected_types = {
-        str(entity.get("type", "")).upper()
-        for entity in preliminary
-    }
-
-    if "PAN" in detected_types:
-        return {
-            "document_type": "PAN",
-            "expected_types": {
-                "NAME",
-                "DOB",
-            }
-        }
-
-    if "AADHAAR" in detected_types:
-        return {
-            "document_type": "AADHAAR",
-            "expected_types": {
-                "NAME",
-                "DOB",
-                "ADDRESS",
-            }
-        }
-
-    if "DRIVING_LICENCE" in detected_types:
-        return {
-            "document_type": "DRIVING_LICENCE",
-            "expected_types": {
-                "NAME",
-                "DOB",
-                "ADDRESS",
-            }
-        }
-
-    if "VOTER_ID" in detected_types:
-        return {
-            "document_type": "VOTER_ID",
-            "expected_types": {
-                "NAME",
-                "ADDRESS",
-            }
-        }
-
-    return {
-        "document_type": "GENERIC",
-        "expected_types": set()
-    }
-
-
-def find_low_confidence_entities(preliminary):
+def find_low_confidence_entities(
+    preliminary: List[Dict[str, Any]]
+):
 
     low_confidence = []
 
@@ -231,24 +216,54 @@ def find_low_confidence_entities(preliminary):
             )
         )
 
-        if confidence < LOW_CONFIDENCE_THRESHOLD:
-            low_confidence.append(entity)
+        context_score = float(
+            entity.get(
+                "context_score",
+                0.0
+            )
+        )
+
+        role = entity.get(
+            "context_role",
+            "unknown"
+        )
+
+        # Strong non-target evidence should never
+        # activate the LLM.
+        if role == "non_target":
+            continue
+
+        if (
+            confidence < LOW_CONFIDENCE_THRESHOLD
+            and context_score <= 0
+        ):
+            low_confidence.append(
+                entity
+            )
 
     return low_confidence
 
 
-def find_conflicts(preliminary):
+def find_conflicts(
+    preliminary: List[Dict[str, Any]]
+):
 
     values_by_type = {}
 
     for entity in preliminary:
 
         entity_type = str(
-            entity.get("type", "")
+            entity.get(
+                "type",
+                ""
+            )
         ).upper()
 
         value = str(
-            entity.get("value", "")
+            entity.get(
+                "value",
+                ""
+            )
         ).strip().lower()
 
         if not entity_type or not value:
@@ -256,46 +271,167 @@ def find_conflicts(preliminary):
 
         values_by_type.setdefault(
             entity_type,
-            set()
-        ).add(value)
+            []
+        ).append(entity)
 
     conflicts = []
 
-    for entity_type, values in values_by_type.items():
+    for entity_type, entities in values_by_type.items():
 
-        if len(values) > 1:
-            conflicts.append(entity_type)
+        if len(entities) <= 1:
+            continue
+
+        values = {
+            str(
+                entity.get(
+                    "value",
+                    ""
+                )
+            ).strip().lower()
+            for entity in entities
+        }
+
+        if len(values) <= 1:
+            continue
+
+        meaningful = [
+            entity
+            for entity in entities
+            if entity.get(
+                "context_role",
+                "unknown"
+            ) != "secondary_person"
+            and entity.get(
+                "context_role",
+                "unknown"
+            ) != "non_target"
+        ]
+
+        if len(meaningful) <= 1:
+            continue
+
+        if entity_type in {
+            "PAN",
+            "AADHAAR",
+            "VOTER_ID",
+            "DRIVING_LICENCE"
+        }:
+
+            conflicts.append(
+                entity_type
+            )
+
+            continue
+
+        strong_candidates = [
+            entity
+            for entity in meaningful
+            if float(
+                entity.get(
+                    "context_score",
+                    0.0
+                )
+            ) > 0
+        ]
+
+        if len(strong_candidates) > 1:
+            conflicts.append(
+                entity_type
+            )
 
     return conflicts
 
 
-def context_node(state: GraphState):
+def has_primary_name_ambiguity(
+    preliminary: List[Dict[str, Any]]
+):
+
+    names = [
+        entity
+        for entity in preliminary
+        if str(
+            entity.get(
+                "type",
+                ""
+            )
+        ).upper() == "NAME"
+        and entity.get(
+            "context_role",
+            "unknown"
+        ) not in {
+            "secondary_person",
+            "non_target"
+        }
+    ]
+
+    if len(names) <= 1:
+        return False
+
+    primary_candidates = [
+        entity
+        for entity in names
+        if entity.get(
+            "context_role"
+        ) == "primary"
+    ]
+
+    if len(primary_candidates) == 1:
+        return False
+
+    return True
+
+
+def has_unresolved_context(
+    preliminary: List[Dict[str, Any]]
+):
+
+    for entity in preliminary:
+
+        role = entity.get(
+            "context_role",
+            "unknown"
+        )
+
+        confidence = float(
+            entity.get(
+                "confidence",
+                0.0
+            )
+        )
+
+        context_score = float(
+            entity.get(
+                "context_score",
+                0.0
+            )
+        )
+
+        if role == "non_target":
+            continue
+
+        if (
+            role == "unknown"
+            and confidence < 0.80
+            and context_score <= 0
+        ):
+
+            return True
+
+    return False
+
+
+def context_node(
+    state: GraphState
+):
 
     preliminary = state.get(
         "preliminary_entities",
         []
     )
 
-    profile = detect_document_profile(
-        preliminary
-    )
-
-    document_type = profile[
-        "document_type"
-    ]
-
-    expected_types = profile[
-        "expected_types"
-    ]
-
-    detected_types = {
-        str(entity.get("type", "")).upper()
-        for entity in preliminary
-    }
-
-    missing = (
-        expected_types
-        - detected_types
+    text = state.get(
+        "text",
+        ""
     )
 
     low_confidence = (
@@ -308,32 +444,24 @@ def context_node(state: GraphState):
         preliminary
     )
 
+    primary_name_ambiguity = (
+        has_primary_name_ambiguity(
+            preliminary
+        )
+    )
+
+    unresolved_context = (
+        has_unresolved_context(
+            preliminary
+        )
+    )
+
     print(
         "\n========== LLM FALLBACK CHECK =========="
     )
 
     print(
-        "Document profile:",
-        document_type
-    )
-
-    print(
-        "Expected contextual types:",
-        expected_types
-    )
-
-    print(
-        "Detected types:",
-        detected_types
-    )
-
-    print(
-        "Missing relevant types:",
-        missing
-    )
-
-    print(
-        "Low-confidence entities:",
+        "Relevant low-confidence:",
         low_confidence
     )
 
@@ -342,10 +470,21 @@ def context_node(state: GraphState):
         conflicts
     )
 
+    print(
+        "Primary-name ambiguity:",
+        primary_name_ambiguity
+    )
+
+    print(
+        "Unresolved context:",
+        unresolved_context
+    )
+
     llm_required = (
-        bool(missing)
-        or bool(low_confidence)
+        bool(low_confidence)
         or bool(conflicts)
+        or primary_name_ambiguity
+        or unresolved_context
     )
 
     if not llm_required:
@@ -355,8 +494,8 @@ def context_node(state: GraphState):
         )
 
         print(
-            "Reason: extraction is sufficient "
-            "and unambiguous."
+            "Reason: extraction is "
+            "contextually sufficient."
         )
 
         print(
@@ -378,7 +517,7 @@ def context_node(state: GraphState):
     return {
         "contextual_entities":
             contextual_extract(
-                state["text"]
+                text
             )
     }
 
@@ -388,16 +527,29 @@ def final_reconciliation_node(
 ):
 
     entities = (
-        state.get("regex_entities", [])
+        state.get(
+            "regex_entities",
+            []
+        )
         +
-        state.get("nlp_entities", [])
+        state.get(
+            "nlp_entities",
+            []
+        )
         +
-        state.get("contextual_entities", [])
+        state.get(
+            "contextual_entities",
+            []
+        )
     )
 
-    entities = filter_primary_person_entities(
+    entities = classify_context(
         entities,
         state["text"]
+    )
+
+    entities = filter_non_primary(
+        entities
     )
 
     final = reconcile_entities(
